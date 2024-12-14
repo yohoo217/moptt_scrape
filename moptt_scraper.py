@@ -45,89 +45,68 @@ class MopttScraper:
             print(f"Error getting article links: {str(e)}")
             return []
 
-    def get_article_data(self, article_info):
+    def get_article_data(self, article):
         try:
-            self.driver.get(article_info['url'])
-            time.sleep(3)  # Wait for JavaScript to load
+            # 初始化變數
+            post_time = ""
+            likes = 0
+            responses = []
+            boos = 0
             
-            # 等待互動容器載入
+            # 訪問文章頁面
+            self.driver.get(article['url'])
+            time.sleep(2)
+            
             try:
-                WebDriverWait(self.driver, 10).until(
-                    EC.presence_of_element_located((By.CLASS_NAME, "Zkj8rDosKwearzV1YjeL"))
-                )
-                
                 # 取得發文時間
-                try:
-                    time_element = WebDriverWait(self.driver, 10).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, "div.o_pqSZvuHj7qfwrPg7tI time"))
-                    )
-                    post_time = time_element.get_attribute('datetime')
-                except (TimeoutException, NoSuchElementException) as e:
-                    print(f"無法取得發文時間: {str(e)}")
-                    post_time = ""
-                
-                # 取得讚數、噓數和回應數
-                likes = comments = boos = 0
-                interaction_divs = self.driver.find_elements(By.CLASS_NAME, "T86VdSgcSk_wVSJ87Jd_")
-                
-                for div in interaction_divs:
-                    icon = div.find_element(By.TAG_NAME, "i")
-                    count = int(div.text.strip())
-                    icon_class = icon.get_attribute("class") or ""
-                    
-                    if "fa-thumbs-up" in icon_class:
-                        likes = count
-                    elif "fa-thumbs-down" in icon_class:
-                        boos = count
-                    elif "fa-comment-dots" in icon_class:
-                        comments = count
-                
-            except (TimeoutException, NoSuchElementException) as e:
-                print(f"Error getting interaction counts: {str(e)}")
+                time_element = self.driver.find_element(By.CSS_SELECTOR, "time")
+                post_time = time_element.get_attribute('datetime')
+            except NoSuchElementException:
+                print(f"無法找到發文時間: {article['title']}")
             
-            # 取得回應內容
-            comments_content = []
             try:
-                # 尋找並點擊「顯示全部回應」按鈕
-                try:
-                    show_all_button = WebDriverWait(self.driver, 10).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, "div.FEfFxCwDtx6IcnHAFaMR"))
-                    )
-                    show_all_button.click()
-                    time.sleep(2)  # 等待回應載入
-                except (TimeoutException, NoSuchElementException) as e:
-                    print(f"找不到「顯示全部回應」按鈕或點擊失敗: {str(e)}")
-                
-                # 等待回應載入
-                WebDriverWait(self.driver, 10).until(
-                    EC.presence_of_element_located((By.CLASS_NAME, "qIm88EMEzWPkVVqwCol0"))
-                )
-                
-                # 找出所有回應
-                comment_spans = self.driver.find_elements(By.CLASS_NAME, "qIm88EMEzWPkVVqwCol0")
-                for span in comment_spans:
-                    comment_text = span.text.strip()
-                    if comment_text:
-                        comments_content.append(comment_text)
-                        
-            except TimeoutException:
-                print("等待回應載入超時")
+                # 取得互動數
+                interaction_elements = self.driver.find_elements(By.CSS_SELECTOR, "div.o_pqSZvuHj7qfwrPg7tI")
+                for element in interaction_elements:
+                    text = element.text.strip()
+                    if '讚' in text:
+                        likes = int(text.replace('讚', '').strip())
+                    elif '噓' in text:
+                        boos = int(text.replace('噓', '').strip())
+            except Exception as e:
+                print(f"取得互動數時發生錯誤: {str(e)}")
             
-            result = {
-                'url': article_info['url'],
-                'title': article_info['title'],
-                'post_time': post_time,  # 加入發文時間
+            try:
+                # 點擊顯示全部回應按鈕
+                show_all_button = self.driver.find_element(By.XPATH, "//button[contains(text(), '顯示全部回應')]")
+                show_all_button.click()
+                time.sleep(2)
+            except NoSuchElementException:
+                print("沒有找到顯示全部回應按鈕")
+            except Exception as e:
+                print(f"點擊顯示全部回應按鈕時發生錯誤: {str(e)}")
+            
+            try:
+                # 取得回應內容
+                response_elements = self.driver.find_elements(By.CSS_SELECTOR, "div.o_2OLTDP8GEkfxplQE7tN")
+                for element in response_elements:
+                    responses.append(element.text.strip())
+            except Exception as e:
+                print(f"取得回應內容時發生錯誤: {str(e)}")
+            
+            # 回傳結果
+            return {
+                'title': article['title'],
+                'url': article['url'],
+                'post_time': post_time,
                 'likes': likes,
-                'responses': comments,
-                'boos': boos,
-                'responses_content': comments_content
+                'responses': len(responses),
+                'responses_content': responses,
+                'boos': boos
             }
             
-            print(f"成功擷取文章資料: {result}")
-            return result
-            
         except Exception as e:
-            print(f"擷取文章資料時發生錯誤: {str(e)}")
+            print(f"處理文章時發生錯誤: {str(e)}")
             return None
 
     def scrape_and_save(self, board_url, output_file):
