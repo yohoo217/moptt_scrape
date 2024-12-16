@@ -2,35 +2,101 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.wait import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service as ChromeService
+from webdriver_manager.chrome import ChromeDriverManager
 import pandas as pd
 import time
-import random
 from datetime import datetime
+import json
+import random
+import os
+
+def check_month(post_time_str):
+    # 假設 post_time 為 ISO8601 格式字串，例如: "2024-01-15T12:34:56Z"
+    # 根據需求，解析時間以取得 year、month。
+    # 這裡僅示範，請依實務調整解析邏輯。
+    # 回傳 (year, month) 的 tuple
+    try:
+        dt = datetime.fromisoformat(post_time_str.replace('Z','+00:00'))  # 若有Z為UTC標記
+        return (dt.year, dt.month)
+    except:
+        return (None, None)
+
 
 class MopttScraper:
     def __init__(self):
         self.base_url = "https://moptt.tw"
-        self.options = webdriver.ChromeOptions()
-        self.options.add_argument('--headless=new')
+        self.init_driver()
+        self.progress_file = 'scraping_progress.json'
+        self.all_data = []
+        self.load_progress()
+
+    def load_progress(self):
+        try:
+            if os.path.exists(self.progress_file):
+                with open(self.progress_file, 'r', encoding='utf-8') as f:
+                    progress = json.load(f)
+                    self.all_data = progress.get('data', [])
+        except Exception as e:
+            print(f"讀取進度檔案時發生錯誤: {str(e)}")
+            self.all_data = []
+
+    def save_progress(self, new_article):
+        try:
+            self.all_data.append(new_article)
+            progress = {
+                'data': self.all_data,
+                'last_index': len(self.all_data),
+                'timestamp': datetime.now().isoformat()
+            }
+            with open(self.progress_file, 'w', encoding='utf-8') as f:
+                json.dump(progress, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"儲存進度時發生錯誤: {str(e)}")
+
+    def init_driver(self):
+        self.options = Options()
+        self.options.add_argument('--headless')
         self.options.add_argument('--no-sandbox')
         self.options.add_argument('--disable-dev-shm-usage')
         self.options.add_argument('--disable-gpu')
-        self.options.add_argument("--window-size=1920,1080")
-        self.driver = webdriver.Chrome(options=self.options)
-        
-    def get_article_links_and_titles(self, board_url, num_articles=5):
+        self.options.add_argument('--window-size=1920,1080')
         try:
-            self.driver.get(board_url)
-            time.sleep(3)  # Wait for JavaScript to load
-            
-            # Find all article containers
+            self.driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=self.options)
+            self.driver.set_page_load_timeout(30)
+        except Exception as e:
+            print(f"初始化瀏覽器時發生錯誤: {str(e)}")
+            raise
+
+    def restart_driver(self):
+        try:
+            self.driver.quit()
+        except:
+            pass
+        time.sleep(5)  # 等待一下確保完全關閉
+        self.init_driver()
+
+    def get_with_retry(self, url, max_retries=3):
+        for attempt in range(max_retries):
+            try:
+                self.driver.get(url)
+                return True
+            except WebDriverException as e:
+                print(f"瀏覽器連線錯誤 (嘗試 {attempt + 1}/{max_retries}): {str(e)}")
+                if attempt < max_retries - 1:
+                    self.restart_driver()
+                    time.sleep(5)
+                else:
+                    raise
+
+    def get_article_links_and_titles(self):
+        try:
             articles = self.driver.find_elements(By.CSS_SELECTOR, "div[class*='eQQBIg']")
             article_data = []
-            
-            for article in articles[:num_articles]:
+            for article in articles:
                 try:
-                    # Find the link and title within the article container
                     link = article.find_element(By.CSS_SELECTOR, "a[href*='/p/']")
                     title = article.find_element(By.CSS_SELECTOR, "h3").text
                     article_data.append({
@@ -39,174 +105,195 @@ class MopttScraper:
                     })
                 except NoSuchElementException:
                     continue
-            
             return article_data
-        except Exception as e:
-            print(f"Error getting article links: {str(e)}")
+        except WebDriverException:
+            self.restart_driver()
             return []
 
-    def get_article_data(self, article):
+    def get_article_data(self, article_info):
         try:
-            # 初始化變數
+            self.get_with_retry(article_info['url'])
+            
+            # 取得發文時間
             post_time = ""
-            likes = 0
-            responses = []
-            boos = 0
-            
-            # 訪問文章頁面
-            self.driver.get(article['url'])
-            time.sleep(2)
-            
             try:
-                # 取得發文時間
-                time_element = self.driver.find_element(By.CSS_SELECTOR, "time")
-                post_time = time_element.get_attribute('datetime')
-            except NoSuchElementException:
-                print(f"無法找到發文時間: {article['title']}")
-            
+                time_element = WebDriverWait(self.driver, 5).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "div.o_pqSZvuHj7qfwrPg7tI time"))
+                )
+                post_time = time_element.get_attribute('datetime')  # ISO8601格式
+            except (TimeoutException, NoSuchElementException):
+                return None
+
+            # 取得讚數、噓數、回應數
+            likes = comments = boos = 0
             try:
-                # 取得互動數
-                interaction_elements = self.driver.find_elements(By.CSS_SELECTOR, "div.o_pqSZvuHj7qfwrPg7tI")
-                for element in interaction_elements:
-                    text = element.text.strip()
-                    if '讚' in text:
-                        likes = int(text.replace('讚', '').strip())
-                    elif '噓' in text:
-                        boos = int(text.replace('噓', '').strip())
-            except Exception as e:
-                print(f"取得互動數時發生錯誤: {str(e)}")
-            
+                interaction_divs = self.driver.find_elements(By.CLASS_NAME, "T86VdSgcSk_wVSJ87Jd_")
+                for div in interaction_divs:
+                    icon = div.find_element(By.TAG_NAME, "i")
+                    count_text = div.text.strip()
+                    count = int(count_text) if count_text.isdigit() else 0
+                    icon_class = icon.get_attribute("class") or ""
+                    
+                    if "fa-thumbs-up" in icon_class:
+                        likes = count
+                    elif "fa-thumbs-down" in icon_class:
+                        boos = count
+                    elif "fa-comment-dots" in icon_class:
+                        comments = count
+            except Exception:
+                pass
+
+            # 顯示全部回應並取得回應內容
+            comments_content = []
             try:
-                # 點擊顯示全部回應按鈕
-                show_all_button = self.driver.find_element(By.XPATH, "//button[contains(text(), '顯示全部回應')]")
-                show_all_button.click()
-                time.sleep(2)
-            except NoSuchElementException:
-                print("沒有找到顯示全部回應按鈕")
-            except Exception as e:
-                print(f"點擊顯示全部回應按鈕時發生錯誤: {str(e)}")
-            
-            try:
-                # 取得回應內容
-                response_elements = self.driver.find_elements(By.CSS_SELECTOR, "div.o_2OLTDP8GEkfxplQE7tN")
-                for element in response_elements:
-                    responses.append(element.text.strip())
-            except Exception as e:
-                print(f"取得回應內容時發生錯誤: {str(e)}")
-            
-            # 回傳結果
-            return {
-                'title': article['title'],
-                'url': article['url'],
+                # 點擊顯示全部回應 (若有的話)
+                try:
+                    show_all_button = WebDriverWait(self.driver, 2).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, "div.FEfFxCwDtx6IcnHAFaMR"))
+                    )
+                    show_all_button.click()
+                    # 等待回應載入
+                    WebDriverWait(self.driver, 2).until(
+                        EC.presence_of_element_located((By.CLASS_NAME, "qIm88EMEzWPkVVqwCol0"))
+                    )
+                except:
+                    # 沒有顯示全部回應按鈕就直接略過
+                    pass
+                
+                comment_spans = self.driver.find_elements(By.CLASS_NAME, "qIm88EMEzWPkVVqwCol0")
+                for span in comment_spans:
+                    comment_text = span.text.strip()
+                    if comment_text:
+                        comments_content.append(comment_text)
+            except:
+                pass
+
+            result = {
+                'url': article_info['url'],
+                'title': article_info['title'],
                 'post_time': post_time,
                 'likes': likes,
-                'responses': len(responses),
-                'responses_content': responses,
-                'boos': boos
+                'responses': comments,
+                'boos': boos,
+                'responses_content': comments_content
             }
             
+            return result
         except Exception as e:
-            print(f"處理文章時發生錯誤: {str(e)}")
+            print(f"擷取文章資料時發生錯誤: {str(e)}")
             return None
 
-    def scrape_and_save(self, board_url, output_file):
+    def scrape_target_month(self, board_url, min_count=30):
+        print(f"\n開始爬取 {board_url}")
+        print(f"目標: 爬取至少 {min_count} 篇文章")
+        
+        visited_urls = set()
+        consecutive_errors = 0
+        max_consecutive_errors = 10
+        article_number = len(self.all_data) + 1  # 從目前進度繼續編號
+
         try:
-            # 獲取文章連結和標題
-            articles_info = self.get_article_links_and_titles(board_url)
-            print(f"Found {len(articles_info)} articles")
+            self.get_with_retry(board_url)
             
-            if not articles_info:
-                print("No articles found!")
-                return pd.DataFrame()
-            
-            # 爬取每篇文章的資料
-            all_data = []
-            for i, article_info in enumerate(articles_info, 1):
-                print(f"\nScraping article {i}/{len(articles_info)}: {article_info['title']}")
-                article_data = self.get_article_data(article_info)
-                if article_data is not None:
-                    all_data.append(article_data)
-                time.sleep(2)  # 避免請求過快
-            
-            # 將資料轉換為扁平結構
-            flat_data = []
-            for article in all_data:
-                if not article['responses_content']:  
-                    flat_data.append({
-                        'url': article['url'],
-                        'title': article['title'],
-                        'post_time': article['post_time'],
-                        'likes': article['likes'],
-                        'responses': article['responses'],  
-                        'boos': article['boos'],
-                        'response_content': ''
-                    })
-                else:
-                    for comment in article['responses_content']:
-                        flat_data.append({
-                            'url': article['url'],
-                            'title': article['title'],
-                            'post_time': article['post_time'],
-                            'likes': article['likes'],
-                            'responses': article['responses'],  
-                            'boos': article['boos'],
-                            'response_content': comment
-                        })
-            
-            # 儲存為 CSV
-            df = pd.DataFrame(flat_data)
-            if not df.empty:
-                df.to_csv(output_file, index=False, encoding='utf-8-sig')
-                print(f"\n成功爬取 {len(articles_info)} 篇文章的資料")
-            return df
+            while True:  # 改為無限循環，直到達到目標文章數
+                # 若已達成目標，則中斷
+                if len(self.all_data) >= min_count:
+                    break
+
+                try:
+                    # 取得文章連結和標題
+                    new_articles = self.get_article_links_and_titles()
+                    
+                    if not new_articles:
+                        consecutive_errors += 1
+                        if consecutive_errors >= max_consecutive_errors:
+                            print("連續多次無法取得文章，中止爬取")
+                            break
+                        continue
+                    
+                    consecutive_errors = 0  # 重設錯誤計數
+                    
+                    # 過濾已訪問的網址
+                    new_articles = [a for a in new_articles if a['url'] not in visited_urls]
+                    
+                    for article in new_articles:
+                        visited_urls.add(article['url'])
+                        
+                        # 最小延遲，避免被封鎖
+                        time.sleep(0.5)
+                        
+                        article_data = self.get_article_data(article)
+                        if article_data:
+                            # 加入文章編號
+                            article_data['article_number'] = article_number
+                            article_number += 1
+                            
+                            # 立即儲存此篇文章
+                            self.save_progress(article_data)
+                            print(f"\r目前已爬取 {len(self.all_data)} 篇文章", end='', flush=True)
+                            
+                            if len(self.all_data) >= min_count:
+                                break
+                    
+                    # 滾動頁面
+                    if len(self.all_data) < min_count:
+                        self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                        time.sleep(1)  # 等待頁面載入的最小時間
+                        
+                except WebDriverException as e:
+                    print(f"\n瀏覽器錯誤，嘗試重新啟動: {str(e)}")
+                    self.restart_driver()
+                    self.get_with_retry(board_url)
+                    time.sleep(2)  # 減少重啟後等待時間
+                    continue
+                    
         except Exception as e:
-            print(f"Error during scraping: {str(e)}")
-            return pd.DataFrame()
-        finally:
-            self.driver.quit()
+            print(f"\n爬取過程發生錯誤: {str(e)}")
+        
+        print(f"\n=== 爬取完成 ===")
+        print(f"共爬取 {len(self.all_data)} 篇文章")
+
+        return self.all_data
+
+    def close(self):
+        self.driver.quit()
+
 
 if __name__ == "__main__":
     scraper = MopttScraper()
-    board_url = "https://moptt.tw/b/movie"
-    output_file = "moptt_movie_data.csv"
+    board_url = "https://moptt.tw/b/Boy-Girl"
+    min_count = 40  # 預設爬取30篇文章
     
     try:
-        print(f"\n開始爬取看板: {board_url}")
-        articles = scraper.get_article_links_and_titles(board_url, num_articles=4)
-        print(f"找到 {len(articles)} 篇文章\n")
+        csv_file = 'moptt_Gossiping.csv'
         
-        all_data = []
-        for i, article in enumerate(articles, 1):
-            print(f"\n正在處理第 {i}/{len(articles)} 篇文章: {article['title']}")
-            article_data = scraper.get_article_data(article)
-            if article_data:
-                all_data.append(article_data)
-            time.sleep(random.uniform(2, 4))  # 避免太快爬取
+        print(f"\n開始爬取 {board_url} 中至少 {min_count} 篇文章...")
+        all_data = scraper.scrape_target_month(board_url, min_count=min_count)
         
-        # 將資料轉換為DataFrame
-        df = pd.DataFrame(all_data)
-        
-        # 重新命名欄位
-        df = df.rename(columns={
-            'post_time': '發文時間',
-            'responses': '回應數',
-            'responses_content': '回應內容',
-            'likes': '讚數',
-            'boos': '噓數'
-        })
-        
-        # 儲存資料
-        df.to_csv(output_file, encoding='utf-8-sig', index=False)
-        print(f"\n成功爬取 {len(df)} 篇文章的資料")
-        print(f"資料已儲存至 {output_file}")
-        
-        # 顯示資料預覽
-        print("\n資料預覽:")
-        print(df.head())
-        
+        if len(all_data) > 0:
+            # 轉換成 CSV
+            df = pd.DataFrame(all_data)
+            df = df.rename(columns={
+                'article_number': '文章編號',
+                'post_time': '發文時間',
+                'responses': '回應數',
+                'responses_content': '回應內容',
+                'likes': '讚數',
+                'boos': '噓數'
+            })
+            
+            # 調整欄位順序，將文章編號放在最前面
+            columns = ['文章編號'] + [col for col in df.columns if col != '文章編號']
+            df = df[columns]
+            
+            df.to_csv(csv_file, encoding='utf-8-sig', index=False)
+            print(f"資料已轉換並儲存至 {csv_file}")
+            print(df.head())
+        else:
+            print("未找到任何文章。")
+                
     except Exception as e:
         print(f"執行過程中發生錯誤: {str(e)}")
-    
     finally:
-        scraper.driver.quit()
-        print("\n瀏覽器已關閉")
+        scraper.close()
+        print("瀏覽器已關閉")
