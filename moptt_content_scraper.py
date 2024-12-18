@@ -15,7 +15,7 @@ import time
 
 # ====== 設定區域開始 ======
 # Chrome 瀏覽器驅動程式的路徑
-chrome_driver_path = '/Users/aotter/chromedriver-mac-arm64/chromedriver'
+chrome_driver_path = '/Users/uncle/moptt_scrape/chromedriver-mac-x64/chromedriver'
 
 # 等待時間設定（秒）
 WAIT_TIME = 0.5

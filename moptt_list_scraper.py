@@ -13,10 +13,10 @@ import time
 
 # ====== 設定區域開始 ======
 # Chrome 瀏覽器驅動程式的路徑
-chrome_driver_path = '/Users/aotter/chromedriver-mac-arm64/chromedriver'
+chrome_driver_path = '/Users/uncle/moptt_scrape/chromedriver-mac-x64/chromedriver'
 
 # 要滾動的次數
-MAX_SCROLLS = 5
+MAX_SCROLLS = 500
 # ====== 設定區域結束 ======
 
 
@@ -137,7 +137,7 @@ class MopttListScraper:
 
 if __name__ == "__main__":
     # 設定要爬取的看板
-    board_names = ["Beauty", "marvel", "NBA"]
+    board_names = ["WomenTalk", "joke", "HatePolitics"]
     
     scraper = MopttListScraper()
     
