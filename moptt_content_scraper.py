@@ -12,6 +12,7 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 import json
 import time
+from datetime import datetime
 
 # ====== 設定區域開始 ======
 # Chrome 瀏覽器驅動程式的路徑
@@ -168,19 +169,11 @@ if __name__ == "__main__":
     # 設定要處理的看板
     board_names = ["Beauty", "marvel", "NBA"]
     
-    scraper = MopttContentScraper()
-    
     for board_name in board_names:
-        json_file = f"moptt_{board_name}.json"
+        json_file_path = f'moptt_{board_name}.json'
         
-        try:
-            print(f"\r開始處理 {board_name} 看板的文章內容", end='')
-            scraper.process_articles(json_file)
-            print(f"\r{board_name} 看板文章內容處理完成", end='')
-            
-        except Exception as e:
-            print(f"\r處理 {board_name} 看板時發生錯誤: {str(e)}", end='')
-    
-    scraper.close()
-    print("\r爬蟲程式執行完成", end='')
-    print()  # 最後換行
+        # 建立爬蟲實例並執行爬蟲
+        scraper = MopttContentScraper()
+        scraper.process_articles(json_file_path)
+        scraper.close()
+        print(f"\r{board_name} 看板文章內容處理完成")
